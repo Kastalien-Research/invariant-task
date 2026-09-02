@@ -1,0 +1,13 @@
+[project]
+name = "relay"
+version = "0.1.0"
+description = "A small job dispatcher: commands in, events logged, notifications out."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
