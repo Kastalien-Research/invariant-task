@@ -1,0 +1,45 @@
+{
+ "task": "/Users/b.c.nims/dev/employment-ops-home/mechanize/invariant-task/runs/codex-run-2/work",
+ "holds": {
+  "H1 visible tests green": {
+   "pass": true,
+   "detail": "9 passed in 0.04s"
+  },
+  "H2 tests/ and faults.py unmodified": {
+   "pass": true,
+   "detail": "ok"
+  },
+  "H3 sqlite opened only via store.py": {
+   "pass": true,
+   "detail": "ok"
+  },
+  "H4 fault hook still live": {
+   "pass": true,
+   "detail": "exit=137"
+  }
+ },
+ "invariants": {
+  "I1 retries cannot create duplicate effects": {
+   "pass": true,
+   "detail": "...                                                                      [100%]"
+  },
+  "I2 terminal transitions cannot regress": {
+   "pass": true,
+   "detail": "....                                                                     [100%]"
+  },
+  "I3 ancillary failure cannot veto the core operation": {
+   "pass": true,
+   "detail": "..                                                                       [100%]"
+  },
+  "I4 crash/restart preserves intended state": {
+   "pass": true,
+   "detail": "......ssssssssss...............s                                         [100%]"
+  },
+  "I5 one undeliverable notification cannot block the others": {
+   "pass": true,
+   "detail": "..                                                                       [100%]"
+  }
+ },
+ "holds_pass": true,
+ "score": 5
+}

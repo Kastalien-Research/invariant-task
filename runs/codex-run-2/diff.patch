@@ -1,0 +1,263 @@
+diff --git a/NOTES.md b/NOTES.md
+new file mode 100644
+index 0000000..27b8b1d
+--- /dev/null
++++ b/NOTES.md
+@@ -0,0 +1,40 @@
++# Relay dispatcher changes
++
++The dispatcher now makes each command decision in a `BEGIN IMMEDIATE`
++SQLite transaction. The transaction records the canonical command request and
++its result, updates the job, appends the event, and inserts an outbox row. This
++keeps concurrent processes from accepting the same `command_id` twice and
++ensures a crash cannot leave the job, event log, command result, and outbox out
++of sync.
++
++Command results, including rejections, are durable. Reusing a `command_id` with
++the same type, job, and payload returns that stored result without changing
++state, appending an event, or attempting notification. Reusing it for a
++different request returns `IDEMPOTENCY_KEY_REUSED`.
++
++Terminal jobs are checked before command dispatch, so `succeeded`, `failed`,
++and `cancelled` cannot transition again. `cancel` was added for queued and
++running jobs.
++
++Notifications are no longer part of the command transaction. Committed events
++are read from the durable outbox by `Dispatcher.pump()`. Successful sends are
++marked delivered; failures stay pending, and the pump continues with every
++other item so one rejected notification cannot block the queue. A crash after
++send but before the delivered mark can cause a safe duplicate with the same
++`event_id`. `handle()` calls `pump()` opportunistically after accepting a
++command to preserve prompt delivery, but suppresses all background delivery
++errors; periodic host calls to `pump()` provide recovery.
++
++Verification performed:
++
++- Existing suite: `pytest -q` — 9 passed.
++- Focused checks for successful and rejected command replay, key reuse,
++  cancellation, absorbing terminal states, per-item notification failure, and
++  restart delivery.
++- Subprocess fault-injection checks at each durable write and immediately after
++  commit. Pre-commit crashes left no job or event; the post-commit crash left a
++  consistent job/event and a notification delivered by `pump()` after restart.
++
++`uv run --extra dev pytest` could not initialize in this sandbox because the
++installed `uv` binary panicked while accessing macOS system configuration.
++The already-installed pytest environment was used instead.
+diff --git a/relay/dispatcher.py b/relay/dispatcher.py
+index f6466f9..7048b72 100644
+--- a/relay/dispatcher.py
++++ b/relay/dispatcher.py
+@@ -8,6 +8,7 @@ A command is a dict:
+ """
+ from __future__ import annotations
+ 
++import json
+ import uuid
+ 
+ from .model import err, ok
+@@ -24,35 +25,62 @@ class Dispatcher:
+         ctype = command["type"]
+         job_id = command["job_id"]
+         command_id = command["command_id"]
++        request = json.dumps(
++            {"type": ctype, "job_id": job_id, "payload": command["payload"]},
++            sort_keys=True,
++            separators=(",", ":"),
++        )
++
++        # BEGIN IMMEDIATE makes checking and claiming a command_id one atomic
++        # decision even when several processes share the database.
++        with self.store.tx():
++            previous = self.store.get_command(command_id)
++            if previous is not None:
++                previous_request, previous_result = previous
++                if previous_request != request:
++                    return err("IDEMPOTENCY_KEY_REUSED")
++                return previous_result
+ 
+-        job = self.store.get_job(job_id)
+-        if ctype == "create":
+-            if job is not None:
+-                return err("JOB_EXISTS")
+-            new_state = "queued"
+-        else:
+-            if job is None:
+-                return err("JOB_NOT_FOUND")
+-            if ctype == "start":
+-                # (Re)start is always allowed; operators use it to kick a stuck job.
+-                new_state = "running"
+-            elif ctype == "complete":
+-                if job.state != "running":
+-                    return err("INVALID_TRANSITION")
+-                new_state = "succeeded"
+-            elif ctype == "fail":
+-                if job.state != "running":
+-                    return err("INVALID_TRANSITION")
+-                new_state = "failed"
++            job = self.store.get_job(job_id)
++            if job is not None and job.terminal:
++                result = err("INVALID_TRANSITION")
++            elif ctype == "create":
++                if job is not None:
++                    result = err("JOB_EXISTS")
++                else:
++                    result = self._accept(job_id, command_id, ctype, "queued")
++            elif job is None:
++                result = err("JOB_NOT_FOUND")
++            elif ctype == "start":
++                # Starting an already-running job is an intentional operator kick.
++                result = self._accept(job_id, command_id, ctype, "running")
++            elif ctype == "complete" and job.state == "running":
++                result = self._accept(job_id, command_id, ctype, "succeeded")
++            elif ctype == "fail" and job.state == "running":
++                result = self._accept(job_id, command_id, ctype, "failed")
++            elif ctype == "cancel" and job.state in ("queued", "running"):
++                result = self._accept(job_id, command_id, ctype, "cancelled")
++            elif ctype in ("complete", "fail", "cancel"):
++                result = err("INVALID_TRANSITION")
+             else:
+-                return err("UNKNOWN_COMMAND")
++                result = err("UNKNOWN_COMMAND")
++
++            self.store.record_command(command_id, request, result)
+ 
++        # Delivery is deliberately after commit. It is only a latency
++        # optimization; pump() is the durable retry path.
++        if result["ok"]:
++            try:
++                self.pump()
++            except Exception:
++                pass
++        return result
++
++    def _accept(self, job_id: str, command_id: str, ctype: str, new_state: str) -> dict:
+         event_id = str(uuid.uuid4())
+         self.store.set_job_state(job_id, new_state)
+         self.store.append_event(event_id, job_id, command_id, ctype, new_state)
+-        self.notifier.send(
+-            {"event_id": event_id, "job_id": job_id, "type": ctype, "state": new_state}
+-        )
++        self.store.enqueue_notification(event_id)
+         return ok(new_state, event_id)
+ 
+     def pump(self) -> int:
+@@ -61,4 +89,14 @@ class Dispatcher:
+         Called periodically by the host process (a scheduler in production,
+         the test harness in tests).
+         """
+-        return 0
++        delivered = 0
++        # Fetch a snapshot and try every item. A failed sink call is left
++        # pending, but does not create head-of-line blocking for later items.
++        for notification in self.store.pending_notifications():
++            try:
++                self.notifier.send(notification)
++            except Exception:
++                continue
++            self.store.mark_notification_delivered(notification["event_id"])
++            delivered += 1
++        return delivered
+diff --git a/relay/model.py b/relay/model.py
+index 28815eb..b9061bd 100644
+--- a/relay/model.py
++++ b/relay/model.py
+@@ -1,7 +1,8 @@
+ """Job state machine.
+ 
+-    queued --start--> running --complete--> succeeded
+-                              --fail-----> failed
++    queued --start----> running --complete--> succeeded
++       |                  |     --fail-----> failed
++       +----cancel--------+---- --cancel---> cancelled
+ 
+ `succeeded`, `failed` and `cancelled` are terminal.
+ """
+diff --git a/relay/store.py b/relay/store.py
+index 632a6ff..c871625 100644
+--- a/relay/store.py
++++ b/relay/store.py
+@@ -7,6 +7,7 @@ writes go through `Store.tx()`.
+ from __future__ import annotations
+ 
+ import contextlib
++import json
+ import sqlite3
+ import time
+ from typing import Iterator
+@@ -28,6 +29,20 @@ CREATE TABLE IF NOT EXISTS events (
+     state      TEXT NOT NULL,
+     created_at REAL NOT NULL
+ );
++CREATE TABLE IF NOT EXISTS commands (
++    command_id TEXT PRIMARY KEY,
++    request    TEXT NOT NULL,
++    result     TEXT NOT NULL,
++    created_at REAL NOT NULL
++);
++CREATE TABLE IF NOT EXISTS outbox (
++    event_id     TEXT PRIMARY KEY,
++    delivered_at REAL,
++    created_at   REAL NOT NULL,
++    FOREIGN KEY (event_id) REFERENCES events(event_id)
++);
++CREATE INDEX IF NOT EXISTS outbox_pending
++    ON outbox (delivered_at, created_at);
+ """
+ 
+ 
+@@ -70,6 +85,24 @@ class Store:
+             (job_id, state),
+         )
+ 
++    # -- commands -----------------------------------------------------------
++    def get_command(self, command_id: str) -> tuple[str, dict] | None:
++        row = self.conn.execute(
++            "SELECT request, result FROM commands WHERE command_id = ?",
++            (command_id,),
++        ).fetchone()
++        if row is None:
++            return None
++        request, result = row
++        return request, json.loads(result)
++
++    def record_command(self, command_id: str, request: str, result: dict) -> None:
++        self.conn.execute(
++            "INSERT INTO commands (command_id, request, result, created_at) "
++            "VALUES (?, ?, ?, ?)",
++            (command_id, request, json.dumps(result, sort_keys=True), time.time()),
++        )
++
+     # -- events -------------------------------------------------------------
+     def append_event(self, event_id: str, job_id: str, command_id: str, type_: str, state: str) -> None:
+         self.conn.execute(
+@@ -77,6 +110,29 @@ class Store:
+             (event_id, job_id, command_id, type_, state, time.time()),
+         )
+ 
++    # -- outbox -------------------------------------------------------------
++    def enqueue_notification(self, event_id: str) -> None:
++        self.conn.execute(
++            "INSERT INTO outbox (event_id, delivered_at, created_at) VALUES (?, NULL, ?)",
++            (event_id, time.time()),
++        )
++
++    def pending_notifications(self) -> list[dict]:
++        rows = self.conn.execute(
++            "SELECT e.event_id, e.job_id, e.type, e.state "
++            "FROM outbox AS o JOIN events AS e ON e.event_id = o.event_id "
++            "WHERE o.delivered_at IS NULL ORDER BY e.seq"
++        ).fetchall()
++        keys = ("event_id", "job_id", "type", "state")
++        return [dict(zip(keys, row)) for row in rows]
++
++    def mark_notification_delivered(self, event_id: str) -> None:
++        self.conn.execute(
++            "UPDATE outbox SET delivered_at = ? "
++            "WHERE event_id = ? AND delivered_at IS NULL",
++            (time.time(), event_id),
++        )
++
+     def read_events(self, job_id: str | None = None) -> list[dict]:
+         if job_id is None:
+             rows = self.conn.execute("SELECT seq, event_id, job_id, command_id, type, state FROM events ORDER BY seq").fetchall()

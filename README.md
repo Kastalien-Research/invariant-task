@@ -159,7 +159,26 @@ for Claude and a CODEX_HOME holding only auth and model for Codex.
 
 ## What changed after observing the failures
 
-_(filled in after the runs)_
+Task instance 2 (lock ac452c7). The lock was not relaxed: instance 1 stays
+graded as it was, and instance 2 is a new immutable instance with one
+sentence added to the prompt (a rejected notification must not block the
+others) and one invariant added to the grader (I5, witness w5). Both
+agents were rerun from S0 with isolated configs, so nothing from the
+operator's environment was loaded this time.
+
+| run | agent | wall clock | visible | I1 | I2 | I3 | I4 | I5 |
+|---|---|---|---|---|---|---|---|---|
+| codex-run-2 | Codex, gpt-5.6-sol, reasoning high, isolated CODEX_HOME | 4m10s | 9/9 (added 0) | pass | pass | pass | pass | pass |
+| claude-run-2 | Claude Code, claude-fable-5-1, `--setting-sources project --strict-mcp-config`, 20 turns | 6m58s | 28/28 (added 19) | pass | pass | pass | pass | pass |
+
+Both pass 5/5 with all holds green. The one-sentence contract change was
+sufficient: neither agent needed the failure pointed out, only the
+requirement stated. Instance 1 measured a contract gap; instance 2
+measures that closing the gap in the contract, not the grader, changes
+the behaviour. The full-scale companion to this task, run on the real
+repository the domain came from with a three-agent team and a hidden
+grader written by an independent verifier, is in
+[claude-teams-hub/experiments/hub18-task-e2e](https://github.com/Kastalien-Research/claude-teams-hub/tree/main/experiments/hub18-task-e2e).
 
 ## Provenance
 
