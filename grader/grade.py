@@ -17,6 +17,7 @@ INVARIANTS = [
     ("I2 terminal transitions cannot regress", "test_i2_terminal.py"),
     ("I3 ancillary failure cannot veto the core operation", "test_i3_ancillary.py"),
     ("I4 crash/restart preserves intended state", "test_i4_crash.py"),
+    ("I5 one undeliverable notification cannot block the others", "test_i5_isolation.py"),
 ]
 
 
@@ -52,7 +53,7 @@ def render(report: dict) -> str:
     for k, v in report["invariants"].items():
         out.append(f"| {k} | {'PASS' if v['pass'] else 'FAIL'} | {v['detail']} |")
     out.append("")
-    out.append(f"holds: {'PASS' if report['holds_pass'] else 'FAIL'}   invariants: {report['score']}/4")
+    out.append(f"holds: {'PASS' if report['holds_pass'] else 'FAIL'}   invariants: {report['score']}/{len(report['invariants'])}")
     return "\n".join(out)
 
 

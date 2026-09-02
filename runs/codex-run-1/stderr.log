@@ -1,0 +1,36 @@
+Reading additional input from stdin...
+2026-09-02T20:57:23.440700Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:57:24.934834Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer error=\"invalid_token\", error_description=\"No authorization provided\", resource_metadata=\"https://mcp.vercel.com/.well-known/oauth-protected-resource\"" })
+2026-09-02T20:57:24.971626Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer error=\"invalid_request\", error_description=\"No access token was provided in this request\", resource_metadata=\"https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/\"" })
+2026-09-02T20:57:24.990868Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=https://mcp.stripe.com/.well-known/oauth-protected-resource" })
+2026-09-02T20:57:33.942638Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:57:38.044341Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:57:42.281109Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:57:48.703631Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:57:53.536311Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:58:21.636707Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:58:26.371291Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:58:26.442656Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:58:30.762812Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:58:56.721977Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:59:00.316954Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:59:05.021035Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:59:05.037609Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 97 column 5
+2026-09-02T20:59:24.817328Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:59:52.421590Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:59:57.559734Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 127 column 5
+2026-09-02T20:59:57.568592Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 127 column 5
+2026-09-02T21:00:19.199351Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 127 column 5
+2026-09-02T21:00:19.213432Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 127 column 5
+2026-09-02T21:02:10.689182Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T21:02:13.825328Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T21:02:20.536944Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T21:02:23.276146Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to read /Users/b.c.nims/dev/employment-ops-home/mechanize/invariant-task/runs/codex-run-1/work/tests/__pycache__/test_reliability.cpython-313-pytest-9.1.1.pyc: invalid utf-8 sequence of 1 bytes from index 0
+2026-09-02T21:02:23.305646Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 127 column 5
+2026-09-02T21:02:38.246572Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T21:02:40.772293Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T21:02:43.413577Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T21:02:49.948342Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T21:03:01.204616Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 97 column 5
+2026-09-02T21:03:07.405630Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 97 column 5
+2026-09-02T21:03:07.413784Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 97 column 5

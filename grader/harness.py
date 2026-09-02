@@ -32,6 +32,7 @@ def task_dir() -> Path:
 class Sink:
     hits: list[dict] = field(default_factory=list)
     _fail_budget: int = 0
+    _poison: set = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _server: ThreadingHTTPServer | None = None
     _thread: threading.Thread | None = None
@@ -40,6 +41,11 @@ class Sink:
         """The next n POSTs get a 503. Count-bounded, never time-bounded."""
         with self._lock:
             self._fail_budget = n
+
+    def reject_forever(self, job_id: str) -> None:
+        """Every POST for this job_id gets a 400, forever (a poison payload)."""
+        with self._lock:
+            self._poison.add(job_id)
 
     @property
     def url(self) -> str:
@@ -61,7 +67,9 @@ class Sink:
                 n = int(self.headers.get("content-length", "0"))
                 body = json.loads(self.rfile.read(n) or b"{}")
                 with sink._lock:
-                    if sink._fail_budget > 0:
+                    if body.get("job_id") in sink._poison:
+                        status = 400
+                    elif sink._fail_budget > 0:
                         sink._fail_budget -= 1
                         status = 503
                     else:

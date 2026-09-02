@@ -44,9 +44,10 @@ def h2_lock(root: Path) -> tuple[bool, str]:
     if not LOCK.exists():
         return False, "no lock.json; run `python -m holds --lock` against S0"
     expected = json.loads(LOCK.read_text())
-    actual = locked_files(root)
-    diff = sorted(set(expected.items()) ^ set(actual.items()))
-    return not diff, "modified/missing: " + ", ".join(sorted({k for k, _ in diff})) if diff else "ok"
+    # Only the locked files are checked. Adding new tests is allowed; editing
+    # or deleting a locked one is not.
+    diff = sorted(k for k, h in expected.items() if not (root / k).exists() or _sha(root / k) != h)
+    return not diff, ("modified/missing: " + ", ".join(diff)) if diff else "ok"
 
 
 def h3_single_sqlite_entry(root: Path) -> tuple[bool, str]:

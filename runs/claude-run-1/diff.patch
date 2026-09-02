@@ -1,0 +1,640 @@
+diff --git a/NOTES.md b/NOTES.md
+new file mode 100644
+index 0000000..5212cab
+--- /dev/null
++++ b/NOTES.md
+@@ -0,0 +1,93 @@
++# NOTES: making `relay` safe for retrying callers and a flaky sink
++
++## What changed
++
++### `relay/store.py`
++- Two new tables, created alongside the existing ones (no migration of
++  existing columns, so an old database opens unchanged):
++  - `commands(command_id PK, fingerprint, result, created_at)`: one row per
++    `command_id` ever handled. `fingerprint` is the canonical JSON of
++    `(type, job_id, payload)` with sorted keys; `result` is the exact response
++    dict returned to the caller.
++  - `outbox(event_id PK -> events)`: a row means "committed but not yet
++    acknowledged by the sink". Inserted in the same transaction as the event,
++    deleted only after `Notifier.send` returns.
++- New methods: `fingerprint()`, `get_command`, `record_command`,
++  `enqueue_notification`, `pending_notifications` (joins `outbox` to `events`,
++  ordered by `events.seq`), `mark_notified`.
++- sqlite is still opened only through `connect()`; nothing else changed.
++
++### `relay/dispatcher.py`
++`handle` is now:
++
++1. Compute the command fingerprint. If `command_id` is already recorded:
++   same fingerprint -> return the stored result (no transaction, no writes,
++   no notification); different fingerprint -> `IDEMPOTENCY_KEY_REUSED`.
++2. Open one `BEGIN IMMEDIATE` transaction. Re-check step 1 under the write
++   lock (protects against two processes handling the same retry at once).
++3. Decide the outcome from the current job state (`_decide`, pure).
++4. If accepted: upsert job state, append the event, insert the outbox row.
++   Either way: record the command and its result. Commit.
++5. After the commit, drain the outbox (`_deliver_pending`) best-effort.
++
++`pump()` calls the same `_deliver_pending`: read outbox rows oldest first,
++`send` each, delete the row on success, stop at the first failure. Any
++exception from the notifier is swallowed; the row stays for the next call.
++
++The transition table is now data (`TRANSITIONS`), with `cancel` allowed from
++`queued` and `running`. `start` is still allowed from `running` (the
++"kick a stuck job" behaviour the original comment documented). Terminal
++states never appear as a source state, so every command on a terminal job is
++`INVALID_TRANSITION` and nothing is written or announced.
++
++### `relay/model.py`
++Docstring only: added `cancel` to the state diagram.
++
++### `tests/test_reliability.py` (new; existing tests untouched)
++Covers replay, rejected-command replay, key reuse, absorbing terminal states
++for all three finishers, cancel, sink-down `handle`, ordered backlog
++delivery from `pump`, and four crash tests that run a child process under
++`RELAY_FAULT` and inspect the sink log against the event log after restart:
++crash after commit before notify, crash mid-transaction, crash after send
++before ack (duplicate delivery of the same `event_id`), and "an uncommitted
++event is never announced".
++
++## Why this shape
++
++- **One transaction per accepted command** is what makes crash safety
++  trivial: job state, event, outbox row and command record either all exist
++  or none do. `pump()` therefore never has to rebuild anything; the state
++  implied by the log *is* the state, and the outbox is exactly the set of
++  committed events the sink has not acknowledged.
++- **Notify strictly after commit.** That is the only ordering that can never
++  announce an uncommitted event. The price is the window between `send`
++  succeeding and the outbox delete, where a crash causes one redelivery of
++  the same `event_id`; the task allows that and the sink deduplicates.
++- **`handle` still delivers inline** after the commit so the existing
++  synchronous-notification test keeps passing and the sink sees events
++  promptly. It drains the whole outbox in log order rather than sending just
++  its own event, so a new event never overtakes a backlog left by an outage.
++- **Rejections are recorded too.** "Return the original result" is only
++  well-defined if the original result is stored, and a retry of a command
++  that was rejected an hour ago must not silently succeed because the job
++  moved in the meantime. Rejections still write no event and announce
++  nothing.
++
++## Judgment calls worth knowing about
++
++- `create` on a job that already exists returns `JOB_EXISTS` in every state,
++  including terminal ones, because the existing test pins that error for the
++  duplicate-create case and `create` is not a transition. All other commands
++  on a terminal job get `INVALID_TRANSITION`.
++- `_deliver_pending` catches `Exception`, not just `NotifyError`, because the
++  requirement is that a notifier failure of any kind never breaks `handle`.
++  Nothing is logged because the codebase has no logging; the outbox row is
++  the record.
++- While the sink is down, `handle` still pays one failed `send` (up to the
++  notifier timeout) per accepted command, the same latency the old code had.
++  If that matters, the inline drain can be dropped and delivery left to
++  `pump()` alone without touching correctness.
++- Write counts per accepted command, for anyone driving `RELAY_FAULT`:
++  4 writes inside the transaction (job, event, outbox, command) then
++  `COMMIT`; then one autocommit `DELETE` per delivered notification.
++  A rejected command is 1 write plus `COMMIT`. A replayed command is 0.
+diff --git a/relay/__pycache__/__init__.cpython-313.pyc b/relay/__pycache__/__init__.cpython-313.pyc
+index 50f6c31..319eeb4 100644
+Binary files a/relay/__pycache__/__init__.cpython-313.pyc and b/relay/__pycache__/__init__.cpython-313.pyc differ
+diff --git a/relay/__pycache__/dispatcher.cpython-313.pyc b/relay/__pycache__/dispatcher.cpython-313.pyc
+index edc5f65..2a0f034 100644
+Binary files a/relay/__pycache__/dispatcher.cpython-313.pyc and b/relay/__pycache__/dispatcher.cpython-313.pyc differ
+diff --git a/relay/__pycache__/faults.cpython-313.pyc b/relay/__pycache__/faults.cpython-313.pyc
+index b3222d8..a8175bd 100644
+Binary files a/relay/__pycache__/faults.cpython-313.pyc and b/relay/__pycache__/faults.cpython-313.pyc differ
+diff --git a/relay/__pycache__/model.cpython-313.pyc b/relay/__pycache__/model.cpython-313.pyc
+index f550768..bbfd9f4 100644
+Binary files a/relay/__pycache__/model.cpython-313.pyc and b/relay/__pycache__/model.cpython-313.pyc differ
+diff --git a/relay/__pycache__/notifier.cpython-313.pyc b/relay/__pycache__/notifier.cpython-313.pyc
+index fe5ae53..ebf41b7 100644
+Binary files a/relay/__pycache__/notifier.cpython-313.pyc and b/relay/__pycache__/notifier.cpython-313.pyc differ
+diff --git a/relay/__pycache__/store.cpython-313.pyc b/relay/__pycache__/store.cpython-313.pyc
+index fd52f2d..b60e23f 100644
+Binary files a/relay/__pycache__/store.cpython-313.pyc and b/relay/__pycache__/store.cpython-313.pyc differ
+diff --git a/relay/dispatcher.py b/relay/dispatcher.py
+index f6466f9..941e414 100644
+--- a/relay/dispatcher.py
++++ b/relay/dispatcher.py
+@@ -5,6 +5,18 @@ A command is a dict:
+ 
+ `handle` returns {"ok": True, "state": ..., "event_id": ...} on success or
+ {"ok": False, "error": CODE} on rejection.
++
++Guarantees:
++
++* Commands are idempotent by `command_id`. A retry with the same payload
++  replays the original response and has no other effect; a different payload
++  under the same id is rejected with IDEMPOTENCY_KEY_REUSED.
++* Terminal states are absorbing (INVALID_TRANSITION).
++* Every committed event is announced at least once. The event, the job state,
++  the command record and an outbox row are committed in one transaction;
++  the sink is only contacted after that commit, and the outbox row is removed
++  only after the sink accepts. A sink failure is swallowed and the event is
++  retried from `pump()`.
+ """
+ from __future__ import annotations
+ 
+@@ -12,7 +24,17 @@ import uuid
+ 
+ from .model import err, ok
+ from .notifier import Notifier
+-from .store import Store
++from .store import Store, fingerprint
++
++# type -> (states it may be applied from, resulting state).
++# `start` is allowed from `running` on purpose: operators use it to kick a
++# stuck job. Terminal states never appear on the left-hand side.
++TRANSITIONS = {
++    "start": ({"queued", "running"}, "running"),
++    "complete": ({"running"}, "succeeded"),
++    "fail": ({"running"}, "failed"),
++    "cancel": ({"queued", "running"}, "cancelled"),
++}
+ 
+ 
+ class Dispatcher:
+@@ -21,44 +43,83 @@ class Dispatcher:
+         self.notifier = notifier
+ 
+     def handle(self, command: dict) -> dict:
+-        ctype = command["type"]
+-        job_id = command["job_id"]
+         command_id = command["command_id"]
++        fp = fingerprint(command)
++
++        # Fast path: a retry touches nothing, not even a transaction.
++        replay = self._replay(command_id, fp)
++        if replay is not None:
++            return replay
++
++        with self.store.tx():
++            # Re-check under the write lock: another process may have
++            # recorded this command since the read above.
++            replay = self._replay(command_id, fp)
++            if replay is not None:
++                return replay
++
++            result = self._decide(command)
++            if result["ok"]:
++                self.store.set_job_state(command["job_id"], result["state"])
++                self.store.append_event(
++                    result["event_id"], command["job_id"], command_id, command["type"], result["state"]
++                )
++                self.store.enqueue_notification(result["event_id"])
++            self.store.record_command(command_id, fp, result)
++
++        if result["ok"]:
++            # Best effort, after the commit: the outbox guarantees delivery.
++            self._deliver_pending()
++        return result
++
++    def _replay(self, command_id: str, fp: str) -> dict | None:
++        """The response for an already-handled command_id, or None if new."""
++        seen = self.store.get_command(command_id)
++        if seen is None:
++            return None
++        seen_fp, seen_result = seen
++        return seen_result if seen_fp == fp else err("IDEMPOTENCY_KEY_REUSED")
++
++    def _decide(self, command: dict) -> dict:
++        """Validate a command against current state. Pure: no writes."""
++        ctype = command["type"]
++        job = self.store.get_job(command["job_id"])
+ 
+-        job = self.store.get_job(job_id)
+         if ctype == "create":
+             if job is not None:
+                 return err("JOB_EXISTS")
+-            new_state = "queued"
+-        else:
+-            if job is None:
+-                return err("JOB_NOT_FOUND")
+-            if ctype == "start":
+-                # (Re)start is always allowed; operators use it to kick a stuck job.
+-                new_state = "running"
+-            elif ctype == "complete":
+-                if job.state != "running":
+-                    return err("INVALID_TRANSITION")
+-                new_state = "succeeded"
+-            elif ctype == "fail":
+-                if job.state != "running":
+-                    return err("INVALID_TRANSITION")
+-                new_state = "failed"
+-            else:
+-                return err("UNKNOWN_COMMAND")
+-
+-        event_id = str(uuid.uuid4())
+-        self.store.set_job_state(job_id, new_state)
+-        self.store.append_event(event_id, job_id, command_id, ctype, new_state)
+-        self.notifier.send(
+-            {"event_id": event_id, "job_id": job_id, "type": ctype, "state": new_state}
+-        )
+-        return ok(new_state, event_id)
++            return ok("queued", str(uuid.uuid4()))
++        if ctype not in TRANSITIONS:
++            return err("UNKNOWN_COMMAND")
++        if job is None:
++            return err("JOB_NOT_FOUND")
++        allowed_from, new_state = TRANSITIONS[ctype]
++        if job.terminal or job.state not in allowed_from:
++            return err("INVALID_TRANSITION")
++        return ok(new_state, str(uuid.uuid4()))
+ 
+     def pump(self) -> int:
+         """Do any pending background work. Returns the number of items processed.
+ 
+         Called periodically by the host process (a scheduler in production,
+-        the test harness in tests).
++        the test harness in tests). Delivers every outbox entry the sink will
++        accept, oldest first.
++        """
++        return self._deliver_pending()
++
++    def _deliver_pending(self) -> int:
++        """Announce committed-but-unacknowledged events in log order.
++
++        Stops at the first sink failure so per-job ordering is preserved; the
++        remaining entries stay in the outbox for the next call. Never raises
++        on a notifier failure.
+         """
+-        return 0
++        delivered = 0
++        for n in self.store.pending_notifications():
++            try:
++                self.notifier.send(n)
++            except Exception:
++                break
++            self.store.mark_notified(n["event_id"])
++            delivered += 1
++        return delivered
+diff --git a/relay/model.py b/relay/model.py
+index 28815eb..1012d3c 100644
+--- a/relay/model.py
++++ b/relay/model.py
+@@ -2,8 +2,10 @@
+ 
+     queued --start--> running --complete--> succeeded
+                               --fail-----> failed
++    queued / running --cancel--> cancelled
+ 
+-`succeeded`, `failed` and `cancelled` are terminal.
++`succeeded`, `failed` and `cancelled` are terminal: no command changes a
++terminal job.
+ """
+ from __future__ import annotations
+ 
+diff --git a/relay/store.py b/relay/store.py
+index 632a6ff..bf451bb 100644
+--- a/relay/store.py
++++ b/relay/store.py
+@@ -7,6 +7,7 @@ writes go through `Store.tx()`.
+ from __future__ import annotations
+ 
+ import contextlib
++import json
+ import sqlite3
+ import time
+ from typing import Iterator
+@@ -28,9 +29,33 @@ CREATE TABLE IF NOT EXISTS events (
+     state      TEXT NOT NULL,
+     created_at REAL NOT NULL
+ );
++-- One row per command_id ever handled. `fingerprint` is the canonical form
++-- of (type, job_id, payload) and `result` is the JSON response returned to
++-- the caller, replayed verbatim on retry. (No semicolons in comments here.)
++CREATE TABLE IF NOT EXISTS commands (
++    command_id  TEXT PRIMARY KEY,
++    fingerprint TEXT NOT NULL,
++    result      TEXT NOT NULL,
++    created_at  REAL NOT NULL
++);
++-- Durable outbox: an event is inserted here in the same transaction that
++-- commits it, and deleted only after the sink has acknowledged it.
++CREATE TABLE IF NOT EXISTS outbox (
++    event_id TEXT PRIMARY KEY REFERENCES events(event_id)
++);
+ """
+ 
+ 
++def fingerprint(command: dict) -> str:
++    """Canonical form of the parts of a command that must match on retry."""
++    return json.dumps(
++        {"type": command["type"], "job_id": command["job_id"], "payload": command.get("payload", {})},
++        sort_keys=True,
++        separators=(",", ":"),
++        default=repr,
++    )
++
++
+ def connect(path: str) -> sqlite3.Connection:
+     conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+     conn.execute("PRAGMA journal_mode=WAL")
+@@ -88,5 +113,35 @@ class Store:
+         keys = ("seq", "event_id", "job_id", "command_id", "type", "state")
+         return [dict(zip(keys, r)) for r in rows]
+ 
++    # -- commands (idempotency) --------------------------------------------
++    def get_command(self, command_id: str) -> tuple[str, dict] | None:
++        """Return (fingerprint, result) for a previously handled command."""
++        row = self.conn.execute(
++            "SELECT fingerprint, result FROM commands WHERE command_id = ?", (command_id,)
++        ).fetchone()
++        return (row[0], json.loads(row[1])) if row else None
++
++    def record_command(self, command_id: str, fingerprint_: str, result: dict) -> None:
++        self.conn.execute(
++            "INSERT INTO commands (command_id, fingerprint, result, created_at) VALUES (?, ?, ?, ?)",
++            (command_id, fingerprint_, json.dumps(result, sort_keys=True), time.time()),
++        )
++
++    # -- outbox -------------------------------------------------------------
++    def enqueue_notification(self, event_id: str) -> None:
++        self.conn.execute("INSERT INTO outbox (event_id) VALUES (?)", (event_id,))
++
++    def pending_notifications(self) -> list[dict]:
++        """Committed events not yet acknowledged by the sink, oldest first."""
++        rows = self.conn.execute(
++            "SELECT e.event_id, e.job_id, e.type, e.state FROM outbox o "
++            "JOIN events e ON e.event_id = o.event_id ORDER BY e.seq"
++        ).fetchall()
++        keys = ("event_id", "job_id", "type", "state")
++        return [dict(zip(keys, r)) for r in rows]
++
++    def mark_notified(self, event_id: str) -> None:
++        self.conn.execute("DELETE FROM outbox WHERE event_id = ?", (event_id,))
++
+     def close(self) -> None:
+         self.conn.close()
+diff --git a/tests/__pycache__/conftest.cpython-313-pytest-9.1.1.pyc b/tests/__pycache__/conftest.cpython-313-pytest-9.1.1.pyc
+index 51038cc..04061b3 100644
+Binary files a/tests/__pycache__/conftest.cpython-313-pytest-9.1.1.pyc and b/tests/__pycache__/conftest.cpython-313-pytest-9.1.1.pyc differ
+diff --git a/tests/__pycache__/test_dispatcher.cpython-313-pytest-9.1.1.pyc b/tests/__pycache__/test_dispatcher.cpython-313-pytest-9.1.1.pyc
+index a8c6d93..aa44ba3 100644
+Binary files a/tests/__pycache__/test_dispatcher.cpython-313-pytest-9.1.1.pyc and b/tests/__pycache__/test_dispatcher.cpython-313-pytest-9.1.1.pyc differ
+diff --git a/tests/__pycache__/test_reliability.cpython-313-pytest-9.1.1.pyc b/tests/__pycache__/test_reliability.cpython-313-pytest-9.1.1.pyc
+new file mode 100644
+index 0000000..6e4d4d5
+Binary files /dev/null and b/tests/__pycache__/test_reliability.cpython-313-pytest-9.1.1.pyc differ
+diff --git a/tests/test_reliability.py b/tests/test_reliability.py
+new file mode 100644
+index 0000000..014274a
+--- /dev/null
++++ b/tests/test_reliability.py
+@@ -0,0 +1,253 @@
++"""Idempotency, absorbing terminal states, the outbox, cancel, and crash recovery."""
++import json
++import os
++import subprocess
++import sys
++import textwrap
++
++import pytest
++from conftest import RecordingNotifier, cmd
++
++from relay.dispatcher import Dispatcher
++from relay.notifier import NotifyError
++from relay.store import Store
++
++
++class FlakySink(RecordingNotifier):
++    def __init__(self):
++        super().__init__()
++        self.up = True
++
++    def send(self, notification):
++        if not self.up:
++            raise NotifyError("sink down")
++        super().send(notification)
++
++
++@pytest.fixture
++def sink():
++    return FlakySink()
++
++
++@pytest.fixture
++def flaky(store, sink):
++    return Dispatcher(store, sink)
++
++
++# -- idempotency ------------------------------------------------------------
++
++def test_retry_replays_original_result_without_effects(dispatcher, store, notifier):
++    first = dispatcher.handle(cmd("create", "j1", command_id="c1"))
++    again = dispatcher.handle(cmd("create", "j1", command_id="c1"))
++    assert again == first
++    assert len(store.read_events()) == 1
++    assert len(notifier.sent) == 1
++
++
++def test_retry_of_rejection_replays_rejection(dispatcher):
++    dispatcher.handle(cmd("create", "j1"))
++    first = dispatcher.handle(cmd("complete", "j1", command_id="c1"))
++    assert first == {"ok": False, "error": "INVALID_TRANSITION"}
++    dispatcher.handle(cmd("start", "j1"))
++    # Same command id, same payload: original answer, even though it would now succeed.
++    assert dispatcher.handle(cmd("complete", "j1", command_id="c1")) == first
++
++
++def test_same_command_id_different_payload_rejected(dispatcher, store):
++    dispatcher.handle(cmd("create", "j1", command_id="c1", priority=1))
++    res = dispatcher.handle(cmd("create", "j1", command_id="c1", priority=2))
++    assert res == {"ok": False, "error": "IDEMPOTENCY_KEY_REUSED"}
++    res = dispatcher.handle(cmd("start", "j1", command_id="c1"))
++    assert res == {"ok": False, "error": "IDEMPOTENCY_KEY_REUSED"}
++    assert store.get_job("j1").state == "queued"
++
++
++# -- terminal states --------------------------------------------------------
++
++@pytest.mark.parametrize("finisher", ["complete", "fail", "cancel"])
++def test_terminal_states_absorb_every_command(dispatcher, store, notifier, finisher):
++    dispatcher.handle(cmd("create", "j1"))
++    dispatcher.handle(cmd("start", "j1"))
++    res = dispatcher.handle(cmd(finisher, "j1"))
++    assert res["ok"]
++    final = store.get_job("j1").state
++    sent_before = len(notifier.sent)
++    for ctype in ("start", "complete", "fail", "cancel"):
++        assert dispatcher.handle(cmd(ctype, "j1")) == {"ok": False, "error": "INVALID_TRANSITION"}
++    assert store.get_job("j1").state == final
++    assert len(notifier.sent) == sent_before
++    assert len(store.read_events("j1")) == 3
++
++
++# -- cancel -----------------------------------------------------------------
++
++def test_cancel_from_queued_and_running(dispatcher, notifier):
++    dispatcher.handle(cmd("create", "j1"))
++    assert dispatcher.handle(cmd("cancel", "j1"))["state"] == "cancelled"
++    dispatcher.handle(cmd("create", "j2"))
++    dispatcher.handle(cmd("start", "j2"))
++    assert dispatcher.handle(cmd("cancel", "j2"))["state"] == "cancelled"
++    assert [n["state"] for n in notifier.sent if n["type"] == "cancel"] == ["cancelled", "cancelled"]
++
++
++# -- outbox -----------------------------------------------------------------
++
++def test_sink_failure_does_not_fail_handle(flaky, store, sink):
++    sink.up = False
++    res = flaky.handle(cmd("create", "j1"))
++    assert res["ok"] and res["state"] == "queued"
++    assert store.get_job("j1").state == "queued"
++    assert len(store.read_events()) == 1
++    assert sink.sent == []
++
++
++def test_pump_delivers_backlog_in_order_once_sink_returns(flaky, store, sink):
++    sink.up = False
++    flaky.handle(cmd("create", "j1"))
++    flaky.handle(cmd("start", "j1"))
++    flaky.handle(cmd("complete", "j1"))
++    assert flaky.pump() == 0
++    sink.up = True
++    assert flaky.pump() == 3
++    assert [n["state"] for n in sink.sent] == ["queued", "running", "succeeded"]
++    assert [n["event_id"] for n in sink.sent] == [e["event_id"] for e in store.read_events()]
++    assert flaky.pump() == 0
++    assert len(sink.sent) == 3
++
++
++def test_handle_preserves_order_while_backlog_exists(flaky, sink):
++    sink.up = False
++    flaky.handle(cmd("create", "j1"))
++    sink.up = True
++    flaky.handle(cmd("start", "j1"))
++    assert [n["state"] for n in sink.sent] == ["queued", "running"]
++
++
++# -- crash safety -----------------------------------------------------------
++
++CHILD = textwrap.dedent(
++    """
++    import json, os, sys
++    from relay.dispatcher import Dispatcher
++    from relay.notifier import Notifier, NotifyError
++    from relay.store import Store
++
++    class FileSink(Notifier):
++        def __init__(self, path, up, die_after_send):
++            super().__init__("memory://")
++            self.path, self.up, self.die_after_send = path, up, die_after_send
++        def send(self, n):
++            if not self.up:
++                raise NotifyError("down")
++            with open(self.path, "a") as f:
++                f.write(json.dumps(n) + "\\n")
++            if self.die_after_send:
++                os._exit(137)
++
++    db, sink_path, up, die = sys.argv[1], sys.argv[2], sys.argv[3] == "up", sys.argv[4] == "die"
++    d = Dispatcher(Store(db), FileSink(sink_path, up, die))
++    for line in sys.stdin:
++        line = line.strip()
++        if line == "PUMP":
++            print(json.dumps({"pumped": d.pump()}), flush=True)
++        elif line:
++            print(json.dumps(d.handle(json.loads(line))), flush=True)
++    """
++)
++
++
++class Child:
++    def __init__(self, tmp_path):
++        self.db = str(tmp_path / "relay.db")
++        self.sink = str(tmp_path / "sink.jsonl")
++
++    def run(self, lines, fault=None, up=True, die_after_send=False):
++        env = {k: v for k, v in os.environ.items() if k != "RELAY_FAULT"}
++        if fault:
++            env["RELAY_FAULT"] = fault
++        proc = subprocess.run(
++            [sys.executable, "-c", CHILD, self.db, self.sink, "up" if up else "down", "die" if die_after_send else "live"],
++            input="\n".join(json.dumps(l) if isinstance(l, dict) else l for l in lines) + "\n",
++            capture_output=True,
++            text=True,
++            env=env,
++            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
++        )
++        outputs = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
++        return proc.returncode, outputs
++
++    def sink_events(self):
++        if not os.path.exists(self.sink):
++            return []
++        with open(self.sink) as f:
++            return [json.loads(l) for l in f if l.strip()]
++
++    def store(self):
++        return Store(self.db)
++
++
++def test_crash_after_commit_before_notify_is_recovered_by_pump(tmp_path):
++    child = Child(tmp_path)
++    # Sink down: each accepted command is exactly one commit. Die after the 2nd.
++    rc, out = child.run([cmd("create", "j1", "c1"), cmd("start", "j1", "c2"), cmd("complete", "j1", "c3")],
++                        fault="commit:2", up=False)
++    assert rc == 137
++    assert child.sink_events() == []
++    store = child.store()
++    assert store.get_job("j1").state == "running"
++    assert [e["type"] for e in store.read_events("j1")] == ["create", "start"]
++    store.close()
++
++    rc, out = child.run(["PUMP"], up=True)
++    assert rc == 0 and out == [{"pumped": 2}]
++    assert [e["state"] for e in child.sink_events()] == ["queued", "running"]
++    assert child.run(["PUMP"])[1] == [{"pumped": 0}]
++
++
++def test_crash_mid_transaction_leaves_no_trace_and_retry_applies(tmp_path):
++    child = Child(tmp_path)
++    # create = 4 writes (job, event, outbox, command) then commit; sink down so
++    # no delivery writes follow. Die on the 2nd write of `start`, before commit.
++    rc, out = child.run([cmd("create", "j1", "c1"), cmd("start", "j1", "c2")], fault="write:6", up=False)
++    assert rc == 137
++    store = child.store()
++    assert store.get_job("j1").state == "queued"
++    assert [e["type"] for e in store.read_events("j1")] == ["create"]
++    assert store.get_command("c2") is None
++    store.close()
++
++    rc, out = child.run([cmd("start", "j1", "c2"), "PUMP"], up=True)
++    assert rc == 0
++    assert out[0]["ok"] and out[0]["state"] == "running"
++    assert out[1] == {"pumped": 0}
++    assert [e["state"] for e in child.sink_events()] == ["queued", "running"]
++    store = child.store()
++    assert store.get_job("j1").state == "running"
++    assert store.pending_notifications() == []
++    store.close()
++
++
++def test_crash_after_send_before_ack_redelivers_same_event_id(tmp_path):
++    child = Child(tmp_path)
++    rc, out = child.run([cmd("create", "j1", "c1")], die_after_send=True)
++    assert rc == 137
++    first = child.sink_events()
++    assert [e["state"] for e in first] == ["queued"]
++
++    rc, out = child.run(["PUMP"])
++    assert rc == 0 and out == [{"pumped": 1}]
++    events = child.sink_events()
++    assert len(events) == 2 and events[0]["event_id"] == events[1]["event_id"]
++    assert child.run(["PUMP"])[1] == [{"pumped": 0}]
++
++
++def test_uncommitted_event_is_never_announced(tmp_path):
++    child = Child(tmp_path)
++    rc, _ = child.run([cmd("create", "j1", "c1"), cmd("start", "j1", "c2")], fault="write:7", up=True)
++    assert rc == 137
++    rc, out = child.run(["PUMP"])
++    assert out == [{"pumped": 0}]
++    assert [e["state"] for e in child.sink_events()] == ["queued"]
++    store = child.store()
++    assert store.get_job("j1").state == "queued"
++    store.close()

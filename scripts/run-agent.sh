@@ -22,12 +22,15 @@ date -u +"start=%Y-%m-%dT%H:%M:%SZ" | tee -a "$RUN/meta.txt"
 
 case "$AGENT" in
   claude)
+    # isolation: no user-level settings/CLAUDE.md/skills/agents, no MCP servers
     ( cd "$WORK" && claude -p "$PROMPT" --output-format stream-json --verbose \
+        --setting-sources project --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
         --dangerously-skip-permissions ${MODEL:+--model "$MODEL"} \
         > "$RUN/transcript.jsonl" 2> "$RUN/stderr.log" ) || echo "claude exited $?" | tee -a "$RUN/meta.txt"
     ;;
   codex)
-    ( cd "$WORK" && codex exec --skip-git-repo-check --sandbox workspace-write --json \
+    # isolation: CODEX_HOME with auth + model only (no AGENTS.md, no MCP servers)
+    ( cd "$WORK" && CODEX_HOME="${CODEX_HOME_ISOLATED:-$ROOT/.codex-home}" codex exec --skip-git-repo-check --sandbox workspace-write --json \
         ${MODEL:+-m "$MODEL"} -o "$RUN/last-message.md" "$PROMPT" \
         > "$RUN/transcript.jsonl" 2> "$RUN/stderr.log" ) || echo "codex exited $?" | tee -a "$RUN/meta.txt"
     ;;

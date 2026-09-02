@@ -6,3 +6,4 @@ __pycache__/
 *.db-shm
 runs/*/work/
 uv.lock
+.codex-home/

@@ -19,16 +19,17 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 from grade import grade  # noqa: E402
 
-ALL = {"I1", "I2", "I3", "I4"}
+ALL = {"I1", "I2", "I3", "I4", "I5"}
 EXPECT: dict[str, set[str]] = {
     "task": ALL,                       # S0: baseline gate, must fail everything
     "reference": set(),
     "witnesses/w1-inmemory-idempotency": {"I1"},
     "witnesses/w2-start-regresses-terminal": {"I2"},
-    "witnesses/w3-notify-failure-vetoes": {"I3"},
-    "witnesses/w3b-swallow-and-drop": {"I3", "I4"},
+    "witnesses/w3-notify-failure-vetoes": {"I3", "I5"},   # rollback under a poisoned job rejects commands
+    "witnesses/w3b-swallow-and-drop": {"I3", "I4", "I5"},  # dropped poisoned notifications; others lost too
     "witnesses/w4-separate-transactions": {"I4"},
     "witnesses/w4b-mark-before-send": {"I4"},
+    "witnesses/w5-head-of-line-blocking": {"I5"},
 }
 
 

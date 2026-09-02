@@ -21,7 +21,8 @@ Rework the dispatcher so that all of the following hold:
    A notifier failure must never cause `handle` to fail, raise, or roll
    back. Every committed event is eventually announced once the sink is
    reachable again. Redelivery of the same `event_id` is acceptable; the
-   sink deduplicates on it.
+   sink deduplicates on it. A notification the sink rejects must not
+   delay or prevent delivery of any other notification.
 4. **Crash safety.** The process may die at any instruction. On restart,
    the dispatcher must reach the state implied by the event log, must
    announce every committed event that was not yet announced, and must

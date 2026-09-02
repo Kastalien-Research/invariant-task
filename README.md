@@ -105,6 +105,7 @@ Listed before running any agent; confirmed or refuted in the runs section.
 | Event and outbox in separate transactions | outbox exists | I4 crash after first commit |
 | Mark outbox delivered before send | fewer redeliveries | I4 crash between mark and send |
 | Terminal guard skips the write but still emits | state is right | I2 no notification for rejected command |
+| Pump stops at the first failed send (keeps log order) | ordered, simple | I5 poisoned job blocks the rest |
 | Edit a visible test | green | H2 hash lock |
 
 Each of these is a witness under `witnesses/`, except the ones that are
@@ -112,7 +113,49 @@ strict subsets of another.
 
 ## Agent runs
 
-_(filled in from `runs/`)_
+Task instance 1 (lock 674555e: I1..I4, prompt without the rejection sentence).
+Both agents ran with the operator's global tooling loaded (see affordance
+note below). Full transcripts, diffs and grade reports are under `runs/`.
+
+| run | agent | wall clock | visible | I1 | I2 | I3 | I4 | I5 (added later) |
+|---|---|---|---|---|---|---|---|---|
+| codex-run-1 | Codex, gpt-5.6-sol, reasoning high | 6m26s | 17/17 (added 8) | pass | pass | pass | pass | **fail** |
+| claude-run-1 | Claude Code, claude-fable-5-1 | 9m26s | 23/23 (added 14) | pass | pass | pass | pass | **fail** |
+
+Both solutions are good. Both use a `commands` ledger with a fingerprint of
+(type, job_id, payload), record rejections as well as successes, commit the
+job row, event, outbox row and command record in one `BEGIN IMMEDIATE`
+transaction, and deliver after commit with mark-after-send. Codex added a
+second ledger check inside the transaction for concurrent retriers. Neither
+took any of the nine shortcuts listed above.
+
+**The failure both produced.** Both `pump()` implementations stop at the
+first failed send. Codex: `except Exception: break`. Claude, in its
+docstring: "Stops at the first sink failure so per-job ordering is
+preserved." Under a sink that permanently rejects one payload, every
+notification behind it, for every job, is never delivered, and the block
+survives restart because the outbox is durable. Two frontier models, same
+decision, same stated rationale.
+
+**Classification.** Not a capability failure. The prompt said every
+committed event is announced "once the sink is reachable again", which
+never covers a reachable sink rejecting one payload, and the grader had no
+test for it. Ordering-preserving retry is a defensible reading of that
+contract. This is a contract gap and an evaluator gap, found by reading
+the diffs rather than the grade.
+
+Grader defects found in instance 1, both mine:
+
+- H2 flagged Codex's *added* test file as tampering with `tests/`. The
+  lock now covers only the locked files; adding tests is allowed.
+- `qualify.py` overlaid witnesses on S0 instead of on the reference they
+  derive from, so all six failed everything on the first qualification.
+
+Affordance note: `claude -p` loaded the operator's global CLAUDE.md,
+skills and agent definitions (the run spawned a "verifier" subagent), and
+`codex exec` loaded the operator's AGENTS.md and MCP servers. Instance-2
+runs use isolated configs: `--setting-sources project --strict-mcp-config`
+for Claude and a CODEX_HOME holding only auth and model for Codex.
 
 ## What changed after observing the failures
 
