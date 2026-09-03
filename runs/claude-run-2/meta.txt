@@ -1,0 +1,3 @@
+agent=claude model=claude-fable-5-1 work=/Users/b.c.nims/dev/employment-ops-home/mechanize/invariant-task/runs/claude-run-2/work
+start=2026-09-02T23:21:10Z
+end=2026-09-02T23:28:08Z

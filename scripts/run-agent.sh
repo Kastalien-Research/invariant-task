@@ -30,7 +30,13 @@ case "$AGENT" in
     ;;
   codex)
     # isolation: CODEX_HOME with auth + model only (no AGENTS.md, no MCP servers)
-    ( cd "$WORK" && CODEX_HOME="${CODEX_HOME_ISOLATED:-$ROOT/.codex-home}" codex exec --skip-git-repo-check --sandbox workspace-write --json \
+    # provenance: the model and effort come from CODEX_HOME/config.toml, which is
+    # untracked; archive the resolved values with the run so the transcript's
+    # attribution can be verified from committed artifacts.
+    CH="${CODEX_HOME_ISOLATED:-$ROOT/.codex-home}"
+    grep -E '^(model|model_reasoning_effort|model_reasoning_summary) ' "$CH/config.toml" > "$RUN/codex-config.toml" || true
+    echo "resolved_codex_config=$(tr '\n' ' ' < "$RUN/codex-config.toml")" | tee -a "$RUN/meta.txt"
+    ( cd "$WORK" && CODEX_HOME="$CH" codex exec --skip-git-repo-check --sandbox workspace-write --json \
         ${MODEL:+-m "$MODEL"} -o "$RUN/last-message.md" "$PROMPT" \
         > "$RUN/transcript.jsonl" 2> "$RUN/stderr.log" ) || echo "codex exited $?" | tee -a "$RUN/meta.txt"
     ;;
